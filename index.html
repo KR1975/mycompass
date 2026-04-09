@@ -190,6 +190,46 @@ body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--t
 </head>
 <body>
 
+<!-- Password screen -->
+<div id="password-screen" style="position:fixed;inset:0;background:#1a1916;z-index:999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;">
+  <div style="font-family:'DM Serif Display',serif;font-size:26px;color:#fff;letter-spacing:-0.02em;">Khalid · Work Tracker</div>
+  <div style="font-size:12px;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.12em;margin-top:-10px;">UNHCR Budapest · SLS / DPM</div>
+  <div style="margin-top:12px;display:flex;flex-direction:column;align-items:center;gap:10px;">
+    <input type="password" id="pw-input" placeholder="Enter passcode" maxlength="20"
+      style="font-family:'DM Sans',sans-serif;font-size:18px;padding:12px 20px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#fff;outline:none;text-align:center;letter-spacing:0.2em;width:220px;"
+      onkeydown="if(event.key==='Enter')checkPw()">
+    <div id="pw-error" style="font-size:12px;color:#e07070;opacity:0;transition:opacity 0.2s;">Incorrect passcode — try again</div>
+    <button onclick="checkPw()"
+      style="font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;padding:10px 32px;border-radius:8px;border:none;background:#2d5a3d;color:#fff;cursor:pointer;margin-top:4px;">
+      Unlock
+    </button>
+  </div>
+  <div style="font-size:11px;color:rgba(255,255,255,0.2);margin-top:16px;">Protected workspace</div>
+</div>
+
+<script>
+function checkPw() {
+  const val = document.getElementById('pw-input').value;
+  const err = document.getElementById('pw-error');
+  if (val === '7786') {
+    document.getElementById('password-screen').style.display = 'none';
+    sessionStorage.setItem('kh_auth','1');
+  } else {
+    err.style.opacity = '1';
+    document.getElementById('pw-input').value = '';
+    document.getElementById('pw-input').focus();
+    setTimeout(() => err.style.opacity = '0', 2000);
+  }
+}
+window.addEventListener('DOMContentLoaded', () => {
+  if (sessionStorage.getItem('kh_auth') === '1') {
+    document.getElementById('password-screen').style.display = 'none';
+  } else {
+    setTimeout(() => document.getElementById('pw-input').focus(), 100);
+  }
+});
+</script>
+
 <!-- Loading overlay -->
 <div class="loading-overlay" id="loading-overlay">
   <div class="spinner"></div>
