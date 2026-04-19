@@ -55,6 +55,11 @@ textarea{background:transparent;border:none;resize:none;color:#e8e2d5;font-size:
 .filter-inactive{background:transparent;color:#4a4640;border:1px solid transparent!important;}
 .priority-badge{font-size:10px;padding:2px 7px;border-radius:4px;font-family:'Source Sans 3',sans-serif;font-weight:500;}
 .empty{text-align:center;color:#3a3830;padding:40px 0;font-size:14px;font-family:'Source Sans 3',sans-serif;}
+.sync-bar{position:fixed;bottom:0;left:0;right:0;background:#0f1117;border-top:1px solid #252830;padding:10px 20px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;font-family:'Source Sans 3',sans-serif;color:#6b6560;z-index:100;}
+.sync-dot{width:8px;height:8px;border-radius:50%;background:#4caf8a;flex-shrink:0;}
+.sync-dot.syncing{background:#e09b3a;animation:pulse .8s infinite;}
+.sync-dot.error{background:#e05c5c;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
 </style>
 </head>
 <body>
@@ -77,7 +82,6 @@ textarea{background:transparent;border:none;resize:none;color:#e8e2d5;font-size:
     </button>
   </div>
 
-  <!-- IDEAS PANEL -->
   <div id="panel-ideas">
     <div class="input-box">
       <div class="spark-row">
@@ -93,7 +97,6 @@ textarea{background:transparent;border:none;resize:none;color:#e8e2d5;font-size:
     <div id="ideas-list"></div>
   </div>
 
-  <!-- TASKS PANEL -->
   <div id="panel-tasks" style="display:none;">
     <div class="input-box">
       <textarea id="task-input" rows="2" placeholder="Something important to do…" style="width:100%;" onkeydown="taskKey(event)"></textarea>
@@ -107,16 +110,34 @@ textarea{background:transparent;border:none;resize:none;color:#e8e2d5;font-size:
       </div>
     </div>
     <div class="filter-row">
-      <button class="tab-btn" onclick="setFilter('all')" id="f-all" style="padding:5px 14px;border-radius:20px;font-size:12px;font-family:'Source Sans 3',sans-serif;text-transform:capitalize;">All</button>
-      <button class="tab-btn" onclick="setFilter('active')" id="f-active" style="padding:5px 14px;border-radius:20px;font-size:12px;font-family:'Source Sans 3',sans-serif;text-transform:capitalize;">Active</button>
-      <button class="tab-btn" onclick="setFilter('done')" id="f-done" style="padding:5px 14px;border-radius:20px;font-size:12px;font-family:'Source Sans 3',sans-serif;text-transform:capitalize;">Done</button>
+      <button class="tab-btn" onclick="setFilter('all')" id="f-all" style="padding:5px 14px;border-radius:20px;font-size:12px;font-family:'Source Sans 3',sans-serif;">All</button>
+      <button class="tab-btn" onclick="setFilter('active')" id="f-active" style="padding:5px 14px;border-radius:20px;font-size:12px;font-family:'Source Sans 3',sans-serif;">Active</button>
+      <button class="tab-btn" onclick="setFilter('done')" id="f-done" style="padding:5px 14px;border-radius:20px;font-size:12px;font-family:'Source Sans 3',sans-serif;">Done</button>
     </div>
     <div id="tasks-list"></div>
   </div>
 </div>
 
+<div class="sync-bar">
+  <div class="sync-dot syncing" id="sync-dot"></div>
+  <span id="sync-label">Connecting to Firebase…</span>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <script>
-const KEYS = { ideas: 'khalid_ideas_v1', tasks: 'khalid_tasks_v1' };
+const firebaseConfig = {
+  apiKey: "AIzaSyBMlkDs5H_R5PN5AvV8c_l9MCWlJH6tq-Y",
+  authDomain: "khalid-tracker.firebaseapp.com",
+  projectId: "khalid-tracker",
+  storageBucket: "khalid-tracker.firebasestorage.app",
+  messagingSenderId: "344446804385",
+  appId: "1:344446804385:web:98158a57f920debcedebe0"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
 const PC = { high:'#e05c5c', medium:'#e09b3a', low:'#4caf8a' };
 const PL = { high:'High', medium:'Medium', low:'Low' };
 
@@ -125,94 +146,120 @@ let currentTab = 'ideas';
 let currentPriority = 'medium';
 let currentFilter = 'all';
 
-function load() {
-  try { ideas = JSON.parse(localStorage.getItem(KEYS.ideas)) || []; } catch { ideas = []; }
-  try { tasks = JSON.parse(localStorage.getItem(KEYS.tasks)) || []; } catch { tasks = []; }
-}
-function save() {
-  localStorage.setItem(KEYS.ideas, JSON.stringify(ideas));
-  localStorage.setItem(KEYS.tasks, JSON.stringify(tasks));
-}
-function fmtDate(iso) {
-  return new Date(iso).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+function setSyncStatus(status, msg) {
+  const dot = document.getElementById('sync-dot');
+  const label = document.getElementById('sync-label');
+  dot.className = 'sync-dot' + (status==='syncing'?' syncing':status==='error'?' error':'');
+  label.textContent = msg || (status==='synced'?'Synced — all devices':status==='syncing'?'Syncing…':'Connection error');
 }
 
-function switchTab(tab) {
+function fmtDate(ts) {
+  if(!ts) return '';
+  const d = ts.toDate ? ts.toDate() : new Date(ts);
+  return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+}
+function escHtml(t) {
+  return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Real-time listeners
+db.collection('capture_ideas').orderBy('createdAt','desc').onSnapshot(snap => {
+  ideas = snap.docs.map(d => ({id:d.id, ...d.data()}));
+  renderIdeas(); updateCounts();
+  setSyncStatus('synced');
+}, err => {
+  setSyncStatus('error', 'Error: ' + err.message);
+  console.error('Ideas error:', err);
+});
+
+db.collection('capture_tasks').orderBy('createdAt','desc').onSnapshot(snap => {
+  tasks = snap.docs.map(d => ({id:d.id, ...d.data()}));
+  renderTasks(); updateCounts();
+  setSyncStatus('synced');
+}, err => {
+  setSyncStatus('error', 'Error: ' + err.message);
+  console.error('Tasks error:', err);
+});
+
+// Ideas
+window.addIdea = async function() {
+  const text = document.getElementById('idea-input').value.trim();
+  if(!text) return;
+  setSyncStatus('syncing');
+  try {
+    await db.collection('capture_ideas').add({ text, starred:false, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    document.getElementById('idea-input').value = '';
+    document.getElementById('idea-input').focus();
+  } catch(e) {
+    setSyncStatus('error', 'Save failed: ' + e.message);
+  }
+};
+
+window.toggleStar = async function(id, starred) {
+  setSyncStatus('syncing');
+  await db.collection('capture_ideas').doc(id).update({ starred: !starred });
+};
+
+window.deleteIdea = async function(id) {
+  setSyncStatus('syncing');
+  await db.collection('capture_ideas').doc(id).delete();
+};
+
+// Tasks
+window.addTask = async function() {
+  const text = document.getElementById('task-input').value.trim();
+  if(!text) return;
+  setSyncStatus('syncing');
+  try {
+    await db.collection('capture_tasks').add({ text, priority:currentPriority, done:false, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    document.getElementById('task-input').value = '';
+    document.getElementById('task-input').focus();
+  } catch(e) {
+    setSyncStatus('error', 'Save failed: ' + e.message);
+  }
+};
+
+window.toggleTask = async function(id, done) {
+  setSyncStatus('syncing');
+  await db.collection('capture_tasks').doc(id).update({ done: !done });
+};
+
+window.deleteTask = async function(id) {
+  setSyncStatus('syncing');
+  await db.collection('capture_tasks').doc(id).delete();
+};
+
+// UI
+window.switchTab = function(tab) {
   currentTab = tab;
   document.getElementById('panel-ideas').style.display = tab==='ideas'?'block':'none';
   document.getElementById('panel-tasks').style.display = tab==='tasks'?'block':'none';
   ['ideas','tasks'].forEach(t => {
-    const btn = document.getElementById('tab-'+t);
-    btn.className = 'tab-btn ' + (t===tab?'tab-active':'tab-inactive');
+    document.getElementById('tab-'+t).className = 'tab-btn ' + (t===tab?'tab-active':'tab-inactive');
   });
   if(tab==='ideas') document.getElementById('idea-input').focus();
   else document.getElementById('task-input').focus();
-}
+};
 
-function setPriority(p) {
+window.setPriority = function(p) {
   currentPriority = p;
   ['high','medium','low'].forEach(x => {
     const c = document.getElementById('chip-'+x);
-    if(x===p) {
-      c.style.background = PC[x]+'30';
-      c.style.color = PC[x];
-      c.style.border = '1px solid '+PC[x]+'60';
-    } else {
-      c.style.background = '#1f2229';
-      c.style.color = '#555';
-      c.style.border = '1px solid #2a2d35';
-    }
+    if(x===p) { c.style.background=PC[x]+'30'; c.style.color=PC[x]; c.style.border='1px solid '+PC[x]+'60'; }
+    else { c.style.background='#1f2229'; c.style.color='#555'; c.style.border='1px solid #2a2d35'; }
   });
-}
+};
 
-function setFilter(f) {
+window.setFilter = function(f) {
   currentFilter = f;
   ['all','active','done'].forEach(x => {
-    const b = document.getElementById('f-'+x);
-    b.className = 'tab-btn ' + (x===f?'filter-active':'filter-inactive');
+    document.getElementById('f-'+x).className = 'tab-btn ' + (x===f?'filter-active':'filter-inactive');
   });
   renderTasks();
-}
+};
 
-function ideaKey(e) { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();addIdea();} }
-function taskKey(e) { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();addTask();} }
-
-function addIdea() {
-  const text = document.getElementById('idea-input').value.trim();
-  if(!text) return;
-  ideas.unshift({id:Date.now(),text,createdAt:new Date().toISOString(),starred:false});
-  save(); renderIdeas(); updateCounts();
-  document.getElementById('idea-input').value='';
-  document.getElementById('idea-input').focus();
-}
-
-function toggleStar(id) {
-  const i = ideas.find(x=>x.id===id);
-  if(i) i.starred = !i.starred;
-  save(); renderIdeas(); updateCounts();
-}
-function deleteIdea(id) {
-  ideas = ideas.filter(x=>x.id!==id);
-  save(); renderIdeas(); updateCounts();
-}
-
-function addTask() {
-  const text = document.getElementById('task-input').value.trim();
-  if(!text) return;
-  tasks.unshift({id:Date.now(),text,priority:currentPriority,done:false,createdAt:new Date().toISOString()});
-  save(); renderTasks(); updateCounts();
-  document.getElementById('task-input').value='';
-  document.getElementById('task-input').focus();
-}
-function toggleTask(id) {
-  const t = tasks.find(x=>x.id===id);
-  if(t) t.done = !t.done;
-  save(); renderTasks(); updateCounts();
-}
-function deleteTask(id) {
-  tasks = tasks.filter(x=>x.id!==id);
-  save(); renderTasks(); updateCounts();
-}
+window.ideaKey = function(e) { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();window.addIdea();} };
+window.taskKey = function(e) { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();window.addTask();} };
 
 function updateCounts() {
   const starred = ideas.filter(i=>i.starred).length;
@@ -228,7 +275,7 @@ function renderIdeas() {
   if(!ideas.length) { el.innerHTML='<div class="empty">Your next idea is just a thought away</div>'; return; }
   el.innerHTML = ideas.map(idea => `
     <div class="item-row fade-in">
-      <button class="star-btn" onclick="toggleStar(${idea.id})" style="padding-top:2px;flex-shrink:0;">
+      <button class="star-btn" onclick="toggleStar('${idea.id}',${idea.starred})" style="padding-top:2px;flex-shrink:0;">
         <span style="font-size:16px;color:${idea.starred?'#c9a96e':'#333'}">${idea.starred?'★':'☆'}</span>
       </button>
       <div class="item-text">
@@ -238,7 +285,7 @@ function renderIdeas() {
           ${fmtDate(idea.createdAt)}
         </div>
       </div>
-      <button class="icon-btn" onclick="deleteIdea(${idea.id})" style="color:#e05c5c;padding-top:3px;flex-shrink:0;">
+      <button class="icon-btn" onclick="deleteIdea('${idea.id}')" style="color:#e05c5c;padding-top:3px;flex-shrink:0;">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
       </button>
     </div>
@@ -258,7 +305,7 @@ function renderTasks() {
   }
   el.innerHTML = filtered.map(task => `
     <div class="item-row fade-in" style="opacity:${task.done?.5:1}">
-      <button class="icon-btn" onclick="toggleTask(${task.id})" style="
+      <button class="icon-btn" onclick="toggleTask('${task.id}',${task.done})" style="
         width:22px;height:22px;border-radius:6px;flex-shrink:0;
         border:1.5px solid ${task.done?'#4caf8a':'#353840'};
         background:${task.done?'#4caf8a20':'transparent'};
@@ -276,28 +323,17 @@ function renderTasks() {
           </span>
         </div>
       </div>
-      <button class="icon-btn" onclick="deleteTask(${task.id})" style="color:#e05c5c;padding-top:3px;flex-shrink:0;">
+      <button class="icon-btn" onclick="deleteTask('${task.id}')" style="color:#e05c5c;padding-top:3px;flex-shrink:0;">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
       </button>
     </div>
   `).join('');
 }
 
-function escHtml(t) {
-  return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function init() {
-  load();
-  switchTab('ideas');
-  setPriority('medium');
-  setFilter('all');
-  renderIdeas();
-  renderTasks();
-  updateCounts();
-}
-
-init();
+// Init
+switchTab('ideas');
+setPriority('medium');
+setFilter('all');
 </script>
 </body>
 </html>
